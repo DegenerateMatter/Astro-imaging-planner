@@ -25,7 +25,7 @@ with st.expander("📖 Quick-Start Guide & Instructions"):
     4. **The Verdict**: A **Green Diamond** 💎 means clear skies and high altitudes!
     """)
 
-# Simplified target mapping for stability
+# Simplified target mapping
 COMMON_NAMES = {"rho ophiuchi": "IC 4604", "rosette": "NGC 2237", "orion": "M42", "andromeda": "M31"}
 BORTLE_FACTORS = {1: 1.0, 2: 1.5, 3: 2.2, 4: 3.5, 5: 6.0, 6: 10.0, 7: 18.0, 8: 30.0, 9: 50.0}
 
@@ -91,7 +91,7 @@ with tab1:
             sl, el = max(g_s, ri), min(g_e, se)
             
             if sl >= el:
-                st.error("❌ Target is not visible tonight within your window/altitude limits.")
+                st.error("❌ Target is not visible tonight within limits.")
             else:
                 usable = max(0, (el-sl).to(u.second).value - (flip_time*60))
                 final_subs = int(usable // (t_exp + 5))
@@ -100,48 +100,41 @@ with tab1:
                 with st.expander("✅ Imaging Checklist"):
                     st.checkbox("Dew heaters on?"); st.checkbox("Lens cap removed?"); st.checkbox("Polar alignment verified?")
 
-                with st.expander("📝 Detailed Timing Logs & Charts"):
+                with st.expander("📝 Timing Logs & Charts"):
                     fig, ax = plt.subplots(figsize=(10, 4))
                     tm = g_s - 1*u.hour + np.linspace(0, 12, 100)*u.hour
                     ax.plot(tm.plot_date, co.transform_to(AltAz(obstime=tm, location=location)).alt.degree, color='#00ffcc')
                     ax.axvspan(sl.plot_date, el.plot_date, alpha=0.2, color='#00ffcc')
                     ax.axhline(min_alt, ls="--", color="red", alpha=0.5)
                     ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M', tz=local_tz))
-                    fig.patch.set_facecolor('#0e1117'); ax.set_facecolor('#0e1117'); ax.tick_params(colors='white')
-                    st.pyplot(fig)
+                    fig.patch.set_facecolor('#0e1117'); ax.set_facecolor('#0e1117'); ax.tick_params(colors='white'); st.pyplot(fig)
         except Exception as e:
             st.error(f"Error: {e}. Check target spelling.")
 
 with tab2:
     st.subheader("Campaign Strategy")
-    cA, cB = st.columns(2)
-    win = cA.date_input("Range", (dt.date.today(), dt.date.today()+dt.timedelta(21)))
-    dys = cB.multiselect("Active Days", ["Friday", "Saturday", "Sunday"], ["Friday", "Saturday"])
-    
-    if st.button("📅 Generate Calendar"):
+    if st.button("📅 Generate Strategy"):
         try:
+            sd, ed = win if 'win' in locals() else (dt.date.today(), dt.date.today()+dt.timedelta(14))
             qn = COMMON_NAMES.get(t_name.lower().strip(), t_name)
             co = SkyCoord.from_name(qn)
             to = FixedTarget(coord=co, name=t_name)
-            sd, ed = win
-            vd = [sd + dt.timedelta(x) for x in range((ed-sd).days+1) if (sd+dt.timedelta(x)).strftime("%A") in dys]
+            vd = [sd + dt.timedelta(x) for x in range((ed-sd).days+1)]
             acc, log = 0, []
             for d in vd:
                 anc = Time(local_tz.localize(dt.datetime.combine(d, dt.time(12, 0))))
                 dk, dw = observer.twilight_evening_astronomical(anc, 'next'), observer.twilight_morning_astronomical(anc, 'next')
-                mp = moon_illumination(dk)*100
-                ms = co.separation(get_body("moon", dk, location)).degree
+                mp, ms = moon_illumination(dk)*100, co.separation(get_body("moon", dk, location)).degree
                 if (ms < moon_sep_limit and mp > 15) or (t_type=="Broadband" and mp > 50):
                     usable, status = 0, "🔴 Moon"
                 else:
                     try:
                         ri, se = observer.target_rise_time(dk, to, 'next', min_alt*u.deg), observer.target_set_time(dk, to, 'next', min_alt*u.deg)
-                        sl, el = max(dk, ri), min(dw, se)
-                        usable = max(0, (el-sl).to(u.second).value - 1200)
+                        sl, el = max(dk, ri), min(dw, se); usable = max(0, (el-sl).to(u.second).value - 1200)
                     except: usable = 0
                     status = "🟢 Clear" if usable > 0 else "⚫ Low"
                 acc += usable
                 log.append({"Date": d.strftime("%m/%d"), "Status": status, "Gain": round(usable/3600, 1)})
             st.dataframe(pd.DataFrame(log), use_container_width=True, hide_index=True)
-            if bortle > 3: st.warning(f"Bortle {bortle} Reality: Total integration equals {acc/3600/BORTLE_FACTORS[bortle]:.1f} dark-site hours.")
+            if bortle > 3: st.warning(f"Bortle {bortle} Reality: This equals {acc/3600/BORTLE_FACTORS[bortle]:.1f} dark-site hours.")
         except: st.error("Target lookup failed.")
