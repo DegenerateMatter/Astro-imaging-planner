@@ -15,26 +15,27 @@ from astropy.utils.exceptions import AstropyWarning
 warnings.simplefilter('ignore', category=AstropyWarning)
 
 st.set_page_config(layout="wide", page_title="Astro Imaging Planner Pro", page_icon="🔭")
-st.title("🔭 Astro Imaging Planner Pro V1.0")
+st.title("🔭 Astro Imaging Planner Pro V1.2")
 
-with st.expander("📖 Quick-Start Guide & Instructions"):
-    st.markdown("""
-    1. **Set your location** in the sidebar to match your backyard.
-    2. **Choose your filter type**: Broadband (RGB) skips bright moons; Narrowband (SHO) is more tolerant.
-    3. **Set your Overheads**: Factor in your mount's meridian flip and autofocus time.
-    4. **The Verdict**: A **Green Diamond** 💎 means clear skies and high altitudes!
-    """)
+# --- DATA & CONSTANTS ---
+NAME_FIXER = {
+    "rho ophiuchi": "IC 4604", "rho oph": "IC 4604", "rosette": "NGC 2237",
+    "orion": "M42", "andromeda": "M31", "thor's helmet": "NGC 2359",
+    "crescent": "NGC 6888", "eagle": "M16", "lagoon": "M8", "trifid": "M20",
+    "dumbbell": "M27", "ring": "M57", "whirlpool": "M51", "pinwheel": "M101",
+    "heart": "IC 1805", "soul": "IC 1848", "california": "NGC 1499",
+    "north america": "NGC 7000", "pelican": "IC 5070", "elephant trunk": "IC 1396",
+    "wizard": "NGC 7380", "bubble": "NGC 7635", "pacman": "NGC 281",
+    "m42": "M42", "m31": "M31", "m101": "M101", "m51": "M51"
+}
 
-# Simplified target mapping
-COMMON_NAMES = {"rho ophiuchi": "IC 4604", "rosette": "NGC 2237", "orion": "M42", "andromeda": "M31"}
 BORTLE_FACTORS = {1: 1.0, 2: 1.5, 3: 2.2, 4: 3.5, 5: 6.0, 6: 10.0, 7: 18.0, 8: 30.0, 9: 50.0}
 
 def get_moon_phase_name(t):
     illum = moon_illumination(t)
     waxing = moon_illumination(t + 1*u.day) > illum
-    if illum < 0.05: return "🌑 New Moon"
-    if illum > 0.95: return "🌕 Full Moon"
-    return ("🌓" if waxing else "🌗") + f" {illum*100:.0f}%"
+    icon = "🌑" if illum < 0.05 else "🌕" if illum > 0.95 else "🌓" if waxing else "🌗"
+    return f"{icon} {illum*100:.0f}%"
 
 # --- SIDEBAR ---
 st.sidebar.header("🌍 Location & Setup")
@@ -48,93 +49,114 @@ bortle = st.sidebar.slider("Bortle Class", 1, 9, 6)
 location = EarthLocation(lat=lat*u.deg, lon=lon*u.deg, height=331*u.m)
 observer = Observer(location=location, timezone=local_tz)
 
-st.sidebar.header("⚙️ Gear & Constraints")
-moon_sep_limit = st.sidebar.number_input("Min Moon Separation (deg)", value=45)
-min_alt = st.sidebar.number_input("Min Target Altitude (deg)", value=20)
-flip_time = st.sidebar.number_input("Meridian Flip (min)", value=4)
+st.sidebar.header("⚙️ Gear & Safety")
+# MOON SAFETY: Now dynamic but with a "Danger Zone" floor
+min_sep_allowed = st.sidebar.slider("Safety Buffer from Moon (deg)", 10, 90, 35)
+min_alt = st.sidebar.number_input("Min Target Altitude (deg)", value=25)
+flip_time = st.sidebar.number_input("Meridian Flip (min)", value=5)
 
-tab1, tab2 = st.tabs(["⏱️ Night Sequencer", "📅 Campaign Planner"])
+tab1, tab2 = st.tabs(["⏱️ Session Sequencer", "📅 Campaign Planner"])
 
 with tab1:
-    c_d, c_s, c_e = st.columns(3)
-    s_date = c_d.date_input("Imaging Night", dt.date.today())
-    s_mode = c_s.selectbox("Start At", ["Astronomical Dusk", "Sunset"])
-    e_mode = c_e.selectbox("End At", ["Astronomical Dawn", "Sunrise"])
-    
-    st.markdown("### Target Setup")
     c1, c2, c3, c4 = st.columns(4)
-    t_name = c1.text_input("Object", "Rho Ophiuchi")
-    t_type = c2.selectbox("Filter", ["Broadband", "Narrowband"])
-    t_exp = c3.number_input("Exposure (s)", 120)
-    t_subs = c4.number_input("Desired Subs", 60)
+    s_date = c1.date_input("Night", dt.date.today())
+    t_name = c2.text_input("Object", "Rho Ophiuchi")
+    t_type = c3.selectbox("Filter Type", ["Broadband (RGB)", "Narrowband (SHO/Dual)"])
+    t_exp = c4.number_input("Exposure (s)", 120)
 
-    if st.button("🚀 Calculate Window"):
+    if st.button("🚀 Run Session Forecast"):
         try:
+            search_name = NAME_FIXER.get(t_name.lower().strip(), t_name)
+            co = SkyCoord.from_name(search_name)
+            to = FixedTarget(coord=co, name=t_name)
+            
+            # Times
             anc = Time(local_tz.localize(dt.datetime.combine(s_date, dt.time(12, 0))))
-            g_s = observer.twilight_evening_astronomical(anc, 'next') if s_mode == "Astronomical Dusk" else observer.sun_set_time(anc, 'next')
-            g_e = observer.twilight_morning_astronomical(g_s, 'next') if e_mode == "Astronomical Dawn" else observer.sun_rise_time(g_s, 'next')
+            a_dusk = observer.twilight_evening_astronomical(anc, 'next')
+            a_dawn = observer.twilight_morning_astronomical(a_dusk, 'next')
+            
+            # Moon Position Logic
+            moon_pos = get_body("moon", a_dusk, location)
+            sep = co.separation(moon_pos).degree
             
             st.divider()
             m1, m2, m3 = st.columns(3)
-            m1.metric("Night Length", f"{(g_e - g_s).to(u.hour).value:.1f} hrs")
-            m2.metric("Moon Phase", get_moon_phase_name(g_s))
-            m3.metric("Moon Illum", f"{moon_illumination(g_s)*100:.1f}%")
+            m1.metric("Night Length", f"{(a_dawn - a_dusk).to(u.hour).value:.1f} hrs")
+            m2.metric("Moon Phase", get_moon_phase_name(a_dusk))
+            m3.metric("Target-Moon Sep", f"{sep:.1f}°")
 
-            qn = COMMON_NAMES.get(t_name.lower().strip(), t_name)
-            co = SkyCoord.from_name(qn)
-            to = FixedTarget(coord=co, name=t_name)
-            
-            ri = observer.target_rise_time(g_s, to, 'next', horizon=min_alt*u.deg)
-            se = observer.target_set_time(g_s, to, 'next', horizon=min_alt*u.deg)
+            # Visibility Window
+            ri = observer.target_rise_time(a_dusk, to, 'next', horizon=min_alt*u.deg)
+            se = observer.target_set_time(a_dusk, to, 'next', horizon=min_alt*u.deg)
             if se < ri: se = observer.target_set_time(ri, to, 'next', horizon=min_alt*u.deg)
-            
-            sl, el = max(g_s, ri), min(g_e, se)
-            
+            sl, el = max(a_dusk, ri), min(a_dawn, se)
+
+            # Dynamic Moon Separation Check
+            if sep < min_sep_allowed:
+                st.warning(f"⚠️ Warning: Target is only {sep:.1f}° from the Moon. Contrast may be severely degraded.")
+
             if sl >= el:
-                st.error("❌ Target is not visible tonight within limits.")
+                st.error("❌ Target below altitude limits tonight.")
             else:
                 usable = max(0, (el-sl).to(u.second).value - (flip_time*60))
-                final_subs = int(usable // (t_exp + 5))
-                st.success(f"💎 **VERDICT:** You can capture **{final_subs} subs** ({usable/3600:.1f} hrs) tonight.")
+                st.success(f"💎 **VERDICT:** Go! You have **{usable/3600:.1f} hours** of clear target time.")
                 
-                with st.expander("✅ Imaging Checklist"):
-                    st.checkbox("Dew heaters on?"); st.checkbox("Lens cap removed?"); st.checkbox("Polar alignment verified?")
-
-                with st.expander("📝 Timing Logs & Charts"):
+                with st.expander("📈 Session Altitude Chart"):
                     fig, ax = plt.subplots(figsize=(10, 4))
-                    tm = g_s - 1*u.hour + np.linspace(0, 12, 100)*u.hour
-                    ax.plot(tm.plot_date, co.transform_to(AltAz(obstime=tm, location=location)).alt.degree, color='#00ffcc')
+                    tm = a_dusk - 1*u.hour + np.linspace(0, 12, 100)*u.hour
+                    ax.plot(tm.plot_date, co.transform_to(AltAz(obstime=tm, location=location)).alt.degree, color='#00ffcc', label=t_name)
                     ax.axvspan(sl.plot_date, el.plot_date, alpha=0.2, color='#00ffcc')
-                    ax.axhline(min_alt, ls="--", color="red", alpha=0.5)
                     ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M', tz=local_tz))
                     fig.patch.set_facecolor('#0e1117'); ax.set_facecolor('#0e1117'); ax.tick_params(colors='white'); st.pyplot(fig)
         except Exception as e:
-            st.error(f"Error: {e}. Check target spelling.")
+            st.error(f"Lookup Failed. Try a Catalog ID (M42, NGC 7000).")
 
 with tab2:
-    st.subheader("Campaign Strategy")
-    if st.button("📅 Generate Strategy"):
+    st.subheader("📅 Flexible Project Planning")
+    mode = st.radio("Selection Mode", ["Single Date", "Date Range", "Specific Weekends"], horizontal=True)
+    
+    cA, cB = st.columns(2)
+    if mode == "Single Date":
+        dates = [cA.date_input("Select Date", dt.date.today())]
+    elif mode == "Date Range":
+        dr = cA.date_input("Select Range", [dt.date.today(), dt.date.today() + dt.timedelta(days=14)])
+        dates = [dr[0] + dt.timedelta(days=x) for x in range((dr[1]-dr[0]).days + 1)] if len(dr)==2 else []
+    else:
+        dr = cA.date_input("Select Month Range", [dt.date.today(), dt.date.today() + dt.timedelta(days=30)])
+        days = cB.multiselect("Days", ["Friday", "Saturday", "Sunday"], ["Friday", "Saturday"])
+        dates = [dr[0] + dt.timedelta(days=x) for x in range((dr[1]-dr[0]).days + 1) if (dr[0]+dt.timedelta(days=x)).strftime("%A") in days] if len(dr)==2 else []
+
+    if st.button("📅 Generate Calendar Report"):
         try:
-            sd, ed = win if 'win' in locals() else (dt.date.today(), dt.date.today()+dt.timedelta(14))
-            qn = COMMON_NAMES.get(t_name.lower().strip(), t_name)
-            co = SkyCoord.from_name(qn)
+            search_name = NAME_FIXER.get(t_name.lower().strip(), t_name)
+            co = SkyCoord.from_name(search_name)
             to = FixedTarget(coord=co, name=t_name)
-            vd = [sd + dt.timedelta(x) for x in range((ed-sd).days+1)]
             acc, log = 0, []
-            for d in vd:
+            
+            for d in dates:
                 anc = Time(local_tz.localize(dt.datetime.combine(d, dt.time(12, 0))))
                 dk, dw = observer.twilight_evening_astronomical(anc, 'next'), observer.twilight_morning_astronomical(anc, 'next')
-                mp, ms = moon_illumination(dk)*100, co.separation(get_body("moon", dk, location)).degree
-                if (ms < moon_sep_limit and mp > 15) or (t_type=="Broadband" and mp > 50):
-                    usable, status = 0, "🔴 Moon"
+                
+                # Dynamic Moon Separation for this specific date
+                moon_at_dk = get_body("moon", dk, location)
+                curr_sep = co.separation(moon_at_dk).degree
+                illum = moon_illumination(dk)*100
+                
+                # Rule: Skip if too close OR if moon is too bright for Broadband
+                if curr_sep < min_sep_allowed or (t_type.startswith("Broadband") and illum > 50):
+                    usable, status = 0, "🔴 Moon Interference"
                 else:
                     try:
                         ri, se = observer.target_rise_time(dk, to, 'next', min_alt*u.deg), observer.target_set_time(dk, to, 'next', min_alt*u.deg)
-                        sl, el = max(dk, ri), min(dw, se); usable = max(0, (el-sl).to(u.second).value - 1200)
+                        sl_c, el_c = max(dk, ri), min(dw, se)
+                        usable = max(0, (el_c-sl_c).to(u.second).value - 1200)
                     except: usable = 0
-                    status = "🟢 Clear" if usable > 0 else "⚫ Low"
+                    status = "🟢 Clear" if usable > 0 else "⚫ Below Horizon"
+                
                 acc += usable
-                log.append({"Date": d.strftime("%m/%d"), "Status": status, "Gain": round(usable/3600, 1)})
+                log.append({"Date": d.strftime("%a %m/%d"), "Separation": f"{curr_sep:.0f}°", "Status": status, "Hours": round(usable/3600, 1)})
+            
             st.dataframe(pd.DataFrame(log), use_container_width=True, hide_index=True)
-            if bortle > 3: st.warning(f"Bortle {bortle} Reality: This equals {acc/3600/BORTLE_FACTORS[bortle]:.1f} dark-site hours.")
-        except: st.error("Target lookup failed.")
+            st.info(f"✨ Total Project Time: **{acc/3600:.1f} hours** ({acc/3600/BORTLE_FACTORS[bortle]:.1f} dark-site hours)")
+        except:
+            st.error("Please enter a target in the first tab.")
